@@ -33,7 +33,7 @@ If you are using keycloak in docker container:
 
 1) Execute next command `docker exec -it <container_name> /opt/jboss/keycloak/bin/standalone.sh -Djboss.socket.binding.port-offset=100 -Dkeycloak.migration.action=export -Dkeycloak.migration.provider=dir -Dkeycloak.migration.realmName=<realm_name> -Dkeycloak.migration.usersExportStrategy=SKIP -Dkeycloak.migration.dir=/tmp/realm_export_config/ -Djboss.as.management.blocking.timeout=3600`
 2) After you see next text `Admin console listening on...` in your console log you may interrupt execution (Ctrl+C) or move to new console window 
-3) Execute next command `docker cp keycloak:/tmp/realm_export_config/ <your_target_dir>`
+3) Execute next command `docker cp <container_name>:/tmp/realm_export_config/ <your_target_dir>`
 
 # Performance comparison
 
