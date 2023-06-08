@@ -1,0 +1,67 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version "$kotlinVersion"
+    id 'com.avast.gradle.docker-compose' version "$dockerPluginVersion"
+}
+
+apply plugin: 'docker-compose'
+
+test {
+    useJUnitPlatform()
+}
+
+group 'me.stroiker'
+version '1.0.0'
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    extraLibs
+}
+
+compileKotlin {
+    kotlinOptions.jvmTarget = "1.8"
+}
+
+dependencies {
+    extraLibs "org.jetbrains.kotlin:kotlin-stdlib"
+
+    implementation "org.keycloak:keycloak-core:${keycloakVersion}"
+    implementation "org.keycloak:keycloak-services:${keycloakVersion}"
+    implementation "org.keycloak:keycloak-server-spi:${keycloakVersion}"
+    implementation "org.keycloak:keycloak-server-spi-private:${keycloakVersion}"
+    implementation "org.keycloak:keycloak-model-jpa:${keycloakVersion}"
+
+    implementation "org.postgresql:postgresql:${postgresVersion}"
+
+    testCompile "org.junit.jupiter:junit-jupiter-api:${junitJupiterVersion}"
+    testCompile "org.junit.jupiter:junit-jupiter-params:${junitJupiterVersion}"
+    testRuntime "org.junit.jupiter:junit-jupiter-engine:${junitJupiterVersion}"
+    testRuntime "org.junit.vintage:junit-vintage-engine:${junitJupiterVersion}"
+
+    configurations.compile.extendsFrom(configurations.extraLibs)
+}
+
+jar {
+    doFirst {
+        from { configurations.extraLibs.collect { it.isDirectory() ? it : zipTree(it) } }
+    }
+    exclude 'META-INF/*.RSA', 'META-INF/*.SF', 'META-INF/*.DSA'
+    archiveName("custom-import-extension.jar")
+}
+
+task copyJar(type: Copy) {
+    doFirst {
+        delete "${rootDir}/compose/jar"
+    }
+    from "$buildDir/libs"
+    into "$rootDir/compose/jar"
+}
+
+dockerCompose {
+    useComposeFiles = ['compose/docker-compose.yml']
+}
+
+tasks.copyJar.dependsOn(jar).mustRunAfter(jar)
+composeUp.dependsOn(copyJar).mustRunAfter(copyJar)

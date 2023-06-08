@@ -1,0 +1,7 @@
+embed-server --server-config=standalone.xml --std-out=echo
+echo Changing transaction default timeout
+/system-property=jboss.as.management.blocking.timeout:add(value=7200)
+/subsystem=deployment-scanner/scanner=default:write-attribute(name=deployment-timeout,value=7200)
+/subsystem=transactions:write-attribute(name=default-timeout,value=7200)
+echo Done
+stop-embedded-server
