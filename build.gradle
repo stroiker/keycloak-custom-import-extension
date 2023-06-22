@@ -32,13 +32,15 @@ dependencies {
     implementation "org.keycloak:keycloak-server-spi:${keycloakVersion}"
     implementation "org.keycloak:keycloak-server-spi-private:${keycloakVersion}"
     implementation "org.keycloak:keycloak-model-jpa:${keycloakVersion}"
-
     implementation "org.postgresql:postgresql:${postgresVersion}"
 
-    testCompile "org.junit.jupiter:junit-jupiter-api:${junitJupiterVersion}"
-    testCompile "org.junit.jupiter:junit-jupiter-params:${junitJupiterVersion}"
-    testRuntime "org.junit.jupiter:junit-jupiter-engine:${junitJupiterVersion}"
-    testRuntime "org.junit.vintage:junit-vintage-engine:${junitJupiterVersion}"
+    testImplementation "org.junit.jupiter:junit-jupiter-api:${junitJupiterVersion}"
+    testImplementation "org.junit.jupiter:junit-jupiter-params:${junitJupiterVersion}"
+    testImplementation "org.junit.jupiter:junit-jupiter-engine:${junitJupiterVersion}"
+    testImplementation "org.junit.vintage:junit-vintage-engine:${junitJupiterVersion}"
+    testImplementation "org.testcontainers:testcontainers:${testcontainersVersion}"
+    testImplementation "org.testcontainers:junit-jupiter:${testcontainersVersion}"
+    testImplementation "org.keycloak:keycloak-admin-client:${keycloakVersion}"
 
     configurations.compile.extendsFrom(configurations.extraLibs)
 }
@@ -51,7 +53,7 @@ jar {
     archiveName("custom-import-extension.jar")
 }
 
-task copyJar(type: Copy) {
+tasks.register('copyJar', Copy) {
     doFirst {
         delete "${rootDir}/compose/jar"
     }
@@ -63,5 +65,6 @@ dockerCompose {
     useComposeFiles = ['compose/docker-compose.yml']
 }
 
+tasks.test.dependsOn(jar)
 tasks.copyJar.dependsOn(jar).mustRunAfter(jar)
 composeUp.dependsOn(copyJar).mustRunAfter(copyJar)

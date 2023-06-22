@@ -1,4 +1,14 @@
 services:
+  postgres:
+    container_name: db
+    image: postgres
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: test
+    ports:
+      - 5432:5432
+
   keycloak:
     container_name: keycloak
     image: jboss/keycloak:16.1.1
@@ -18,3 +28,5 @@ services:
       - "-Djboss.as.management.blocking.timeout=3600"
     ports:
       - 8080:8080
+    depends_on:
+      - postgres
