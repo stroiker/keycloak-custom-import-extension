@@ -13,10 +13,8 @@ class CustomImportProviderFactoryImpl : ImportProviderFactory {
 
     override fun create(session: KeycloakSession): ImportProvider {
         val dir = System.getProperty(ExportImportConfig.DIR)
-        return CustomImportProviderImpl(
-            session,
-            requireNotNull(dir) { "dir is required" }
-        )
+        return CustomImportProviderImpl(requireNotNull(dir) { "dir is required" })
+
     }
 
     override fun init(config: Config.Scope) {

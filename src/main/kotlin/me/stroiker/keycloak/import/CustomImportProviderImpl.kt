@@ -6,13 +6,8 @@ import org.keycloak.connections.jpa.JpaConnectionProvider
 import org.keycloak.connections.jpa.util.JpaUtils
 import org.keycloak.exportimport.ImportProvider
 import org.keycloak.exportimport.Strategy
-import org.keycloak.models.GroupModel
-import org.keycloak.models.KeycloakSession
-import org.keycloak.models.KeycloakSessionFactory
-import org.keycloak.models.jpa.ClientScopeAdapter
-import org.keycloak.models.jpa.GroupAdapter
-import org.keycloak.models.jpa.PaginationUtils
-import org.keycloak.models.jpa.RealmAdapter
+import org.keycloak.models.*
+import org.keycloak.models.jpa.*
 import org.keycloak.models.jpa.entities.*
 import org.keycloak.models.utils.KeycloakModelUtils
 import org.keycloak.representations.idm.RealmRepresentation
@@ -27,14 +22,12 @@ import java.util.stream.Collectors
 import javax.persistence.EntityManager
 import javax.persistence.LockModeType
 
-class CustomImportProviderImpl(private val session: KeycloakSession, dir: String) : ImportProvider {
+class CustomImportProviderImpl(dir: String) : ImportProvider {
 
-    private val factory: KeycloakSessionFactory
     private val rootDirectory: File
 
     init {
         LOGGER.info("Initialize ${this::class.simpleName} provider")
-        factory = session.keycloakSessionFactory
         rootDirectory = File(dir).also {
             if (!it.exists()) throw IllegalStateException("Directory '$dir' doesn't exist")
             LOGGER.info("Realm config directory '$dir'")
@@ -103,7 +96,7 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
         val model = session.realms()
         val realm = model.getRealmByName(realmName)
         if (realm != null) {
-            if(strategy == Strategy.IGNORE_EXISTING) {
+            if (strategy == Strategy.IGNORE_EXISTING) {
                 LOGGER.info("Realm '$realmName' already exists. Import skipped")
                 return false
             }
@@ -111,7 +104,7 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
             val groupsBeforeUpdate = getGroups(realm.id, entityManager)
 
             LOGGER.info("Removing realm '$realmName' without removing users...")
-            removeRealm(realm.id, entityManager)
+            removeRealm(realm.id, entityManager, session)
             LOGGER.info("Importing realm '$realmName'...")
             realmManager.importRealm(rep, true)
 
@@ -151,7 +144,7 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
             .resultStream
             .collect(
                 Collectors.groupingBy(
-                    { e: GroupEntity-> e.name },
+                    { e: GroupEntity -> e.name },
                     Collectors.mapping({ e: GroupEntity -> e }, Collectors.toList())
                 )
             )
@@ -208,11 +201,9 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
         entityManager.createNativeQuery(DELETE_USER_GROUP_MEMBERSHIP_ORPHANS_QUERY).executeUpdate()
     }
 
-    private fun removeRealm(realmId: String, entityManager: EntityManager) {
-        entityManager.find(
-            RealmEntity::
-            class.java, realmId, LockModeType.PESSIMISTIC_WRITE
-        )?.let { realm ->
+    private fun removeRealm(realmId: String, entityManager: EntityManager, session: KeycloakSession) {
+        entityManager.find(RealmEntity::class.java, realmId, LockModeType.PESSIMISTIC_WRITE)?.let { realm ->
+            entityManager.refresh(realm)
             val realmAdapter = RealmAdapter(session, entityManager, realm)
 
             realm.defaultGroupIds.clear()
@@ -220,7 +211,6 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
 
             entityManager.createNamedQuery("deleteGroupRoleMappingsByRealm")
                 .setParameter("realm", realm.id).executeUpdate()
-
             entityManager.flush()
 
             // remove clients
@@ -230,6 +220,17 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
             for (clientId in clientsIds) {
                 val clientEntity: ClientEntity =
                     entityManager.find(ClientEntity::class.java, clientId, LockModeType.PESSIMISTIC_WRITE)
+                val client = ClientAdapter(realmAdapter, entityManager, session, clientEntity)
+
+                session.keycloakSessionFactory.publish(object : ClientModel.ClientRemovedEvent {
+                    override fun getClient(): ClientModel {
+                        return client
+                    }
+
+                    override fun getKeycloakSession(): KeycloakSession {
+                        return session
+                    }
+                })
                 // remove client roles
                 StreamsUtil.closing(
                     PaginationUtils.paginateQuery(
@@ -243,6 +244,7 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
                     .setParameter("clientId", clientEntity.id)
                     .executeUpdate()
                 entityManager.remove(clientEntity)
+                entityManager.flush()
             }
 
             entityManager.createNamedQuery("deleteDefaultClientScopeRealmMappingByRealm")
@@ -272,7 +274,6 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
                             }
                         }
                 }
-
             // remove realm roles
             StreamsUtil.closing(
                 PaginationUtils.paginateQuery(
@@ -323,6 +324,7 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
                 entityManager.createNamedQuery("deleteGroupRoleMappingsByGroup").setParameter("group", groupEntity)
                     .executeUpdate()
                 entityManager.remove(groupEntity)
+                entityManager.flush()
             }
 
             entityManager.createNamedQuery("removeClientInitialAccessByRealm")
@@ -331,6 +333,16 @@ class CustomImportProviderImpl(private val session: KeycloakSession, dir: String
             entityManager.remove(realm)
             entityManager.flush()
             entityManager.clear()
+
+            session.keycloakSessionFactory.publish(object : RealmModel.RealmRemovedEvent {
+                override fun getRealm(): RealmModel {
+                    return realmAdapter
+                }
+
+                override fun getKeycloakSession(): KeycloakSession {
+                    return session
+                }
+            })
         }
     }
 
