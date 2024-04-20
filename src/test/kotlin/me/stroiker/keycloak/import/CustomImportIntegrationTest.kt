@@ -10,11 +10,13 @@ import org.keycloak.representations.idm.RoleRepresentation
 import org.keycloak.representations.idm.UserRepresentation
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Network
+import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.images.builder.ImageFromDockerfile
 import org.testcontainers.images.builder.dockerfile.DockerfileBuilder
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.MountableFile
+import java.time.Duration
 
 @Testcontainers
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -23,29 +25,21 @@ class CustomImportIntegrationTest {
     val network = Network.newNetwork()
 
     @Container
-    val postgresCnt = GenericContainer<GenericContainer<*>>(
-        ImageFromDockerfile()
-            .withDockerfileFromBuilder { builder: DockerfileBuilder ->
-                builder
-                    .from("postgres:12-alpine")
-                    .env("POSTGRES_DB", POSTGRES_DATABASE)
-                    .env("POSTGRES_USER", POSTGRES_USER)
-                    .env("POSTGRES_PASSWORD", POSTGRES_PASSWORD)
-                    .expose(5432)
-                    .build()
-            }
-    )
-        .withExposedPorts(5432)
-        .withNetwork(network)
-        .withNetworkAliases(POSTGRES_CNT_NAME)
+    val postgresCnt =
+        GenericContainer<GenericContainer<*>>(ImageFromDockerfile().withDockerfileFromBuilder { builder: DockerfileBuilder ->
+            builder.from("postgres:12-alpine").env("POSTGRES_DB", POSTGRES_DATABASE)
+                .env("POSTGRES_USER", POSTGRES_USER).env("POSTGRES_PASSWORD", POSTGRES_PASSWORD).expose(5432)
+                .build()
+        }).withExposedPorts(5432).withNetwork(network).withNetworkAliases(POSTGRES_CNT_NAME)
 
     @Test
     fun `should import configuration without user loss`() {
+        val realmName = "test_realm"
         val realmRoleId: String
         val userId: String
-        var keycloakCnt = createKeycloakCnt(DIR_IMPORT_PROVIDER).apply { start() }
+        var keycloakCnt = createKeycloakCnt(DIR_IMPORT_PROVIDER, realmName).apply { start() }
         var adminClient = creteAdminClient(String.format(KEYCLOAK_PATH, keycloakCnt.firstMappedPort))
-        adminClient.realm(REALM_NAME).also { realm ->
+        adminClient.realm(realmName).also { realm ->
             realm.clients().findByClientId(CLIENT_NAME).first().id.also { clientId ->
                 // create user
                 userId = UserRepresentation().apply {
@@ -57,9 +51,7 @@ class CustomImportIntegrationTest {
                 }
                 // create new realm role
                 val newRealmRole = RoleRepresentation(
-                    NEW_REALM_ROLE_NAME,
-                    "Test role that should be removed after custom import",
-                    true
+                    NEW_REALM_ROLE_NAME, "Test role that should be removed after custom import", true
                 )
                 realm.roles().create(newRealmRole)
                 // assign existing roles and groups to user
@@ -71,10 +63,9 @@ class CustomImportIntegrationTest {
                             user.roles().realmLevel().add(realmRoles)
                         }
                     // ...client role
-                    realm.clients().get(clientId).roles().get(CLIENT_ROLE_NAME).toRepresentation()
-                        .also { clientRole ->
-                            user.roles().clientLevel(clientId).add(listOf(clientRole))
-                        }
+                    realm.clients().get(clientId).roles().get(CLIENT_ROLE_NAME).toRepresentation().also { clientRole ->
+                        user.roles().clientLevel(clientId).add(listOf(clientRole))
+                    }
                     // ...group
                     realm.groups().groups(GROUP_NAME, 0, 1).first().also { group ->
                         user.joinGroup(group.id)
@@ -107,10 +98,10 @@ class CustomImportIntegrationTest {
         }
 
         keycloakCnt.stop()
-        keycloakCnt = createKeycloakCnt(CUSTOM_IMPORT_PROVIDER).apply { start() }
+        keycloakCnt = createKeycloakCnt(CUSTOM_IMPORT_PROVIDER, realmName).apply { start() }
 
         adminClient = creteAdminClient(String.format(KEYCLOAK_PATH, keycloakCnt.firstMappedPort))
-        adminClient.realm(REALM_NAME).also { realm ->
+        adminClient.realm(realmName).also { realm ->
             realm.clients().findByClientId(CLIENT_NAME).first().id.also { clientId ->
                 // check that realm role changed id after import
                 realm.roles().get(REALM_ROLE_NAME).toRepresentation().also { realmRole ->
@@ -140,58 +131,51 @@ class CustomImportIntegrationTest {
                 }
             }
         }
+        keycloakCnt.stop()
+    }
+
+    @Test
+    fun `should import configuration with JS policies`() {
+        val realmName = "test_realm_js"
+        val keycloakCnt = createKeycloakCnt(CUSTOM_IMPORT_PROVIDER, realmName).apply { start() }
+        val adminClient = creteAdminClient(String.format(KEYCLOAK_PATH, keycloakCnt.firstMappedPort))
+        adminClient.realm(realmName).also { realm ->
+            assertNotNull(realm.clients().findByClientId(CLIENT_NAME).first().id.let { id -> realm.clients().get(id) }
+                .authorization().policies().js().findByName("Default Policy"))
+        }
+        keycloakCnt.stop()
     }
 
     private fun creteAdminClient(path: String) =
-        KeycloakBuilder.builder()
-            .serverUrl(path)
-            .grantType(OAuth2Constants.PASSWORD)
-            .realm("master")
-            .clientId("admin-cli")
-            .username(KEYCLOAK_ADMIN_USER)
-            .password(KEYCLOAK_ADMIN_PASSWORD)
-            .build()
+        KeycloakBuilder.builder().serverUrl(path).grantType(OAuth2Constants.PASSWORD).realm("master")
+            .clientId("admin-cli").username(KEYCLOAK_ADMIN_USER).password(KEYCLOAK_ADMIN_PASSWORD).build()
 
-    private fun createKeycloakCnt(importProvider: String): GenericContainer<*> =
-        GenericContainer<GenericContainer<*>>(
-            ImageFromDockerfile()
-                .withDockerfileFromBuilder { builder: DockerfileBuilder ->
-                    builder
-                        .from("jboss/keycloak:$KEYCLOAK_VERSION")
-                        .env("DB_USER", POSTGRES_USER)
-                        .env("DB_PASSWORD", POSTGRES_PASSWORD)
-                        .env("DB_VENDOR", "postgres")
-                        .env("DB_ADDR", POSTGRES_CNT_NAME)
-                        .env("DB_PORT", "5432")
-                        .env("KEYCLOAK_USER", KEYCLOAK_ADMIN_USER)
-                        .env("KEYCLOAK_PASSWORD", KEYCLOAK_ADMIN_PASSWORD)
-                        .user("root")
-                        .cmd(
-                            "-b",
-                            "0.0.0.0",
-                            "-Dkeycloak.profile.feature.upload_scripts=enabled",
-                            "-Dkeycloak.migration.provider=$importProvider",
-                            "-Dkeycloak.migration.strategy=OVERWRITE_EXISTING",
-                            "-Dkeycloak.migration.action=import",
-                            "-Dkeycloak.migration.dir=/config"
-                        )
-                        .expose(8080)
-                        .build()
-                }
-        )
-            .withCopyFileToContainer(MountableFile.forHostPath("src/test/resources/"), "/config/")
+    private fun createKeycloakCnt(importProvider: String, realmName: String): GenericContainer<*> =
+        GenericContainer<GenericContainer<*>>(ImageFromDockerfile().withDockerfileFromBuilder { builder: DockerfileBuilder ->
+            builder.from("bitnami/keycloak:$KEYCLOAK_VERSION").env("KEYCLOAK_DATABASE_USER", POSTGRES_USER)
+                .env("KEYCLOAK_DATABASE_PASSWORD", POSTGRES_PASSWORD)
+                .env("KEYCLOAK_DATABASE_HOST", POSTGRES_CNT_NAME).env("KEYCLOAK_DATABASE_PORT", "5432")
+                .env("KEYCLOAK_DATABASE_NAME", POSTGRES_DATABASE).env("KEYCLOAK_ADMIN", KEYCLOAK_ADMIN_USER)
+                .env("KEYCLOAK_ADMIN_PASSWORD", KEYCLOAK_ADMIN_PASSWORD).env(
+                    "KEYCLOAK_EXTRA_ARGS",
+                    "-Dkeycloak.migration.realmName=$realmName -Dkeycloak.migration.provider=$importProvider -Dkeycloak.migration.strategy=OVERWRITE_EXISTING -Dkeycloak.migration.action=import -Dkeycloak.migration.dir=/config"
+                ).user("root").expose(8080).build()
+        }).withCreateContainerCmdModifier { modifier ->
+            modifier.hostConfig?.withSecurityOpts(listOf("seccomp:unconfined"))
+        }.withCopyFileToContainer(MountableFile.forHostPath("src/test/resources/"), "/config/")
             .withCopyFileToContainer(
-                MountableFile.forHostPath("build/libs/"),
-                "/opt/jboss/keycloak/standalone/deployments/"
+                MountableFile.forHostPath("build/libs/"), "/opt/bitnami/keycloak/providers/"
+            ).withExposedPorts(8080).withNetwork(network).dependsOn(postgresCnt)
+            .withNetworkAliases("${importProvider}_import_keycloak").waitingFor(
+                Wait.forHttp("/")
+                    .forStatusCode(200)
+                    .forStatusCode(302)
+                    .withStartupTimeout(Duration.ofSeconds(180))
             )
-            .withExposedPorts(8080)
-            .withNetwork(network)
-            .dependsOn(postgresCnt)
-            .withNetworkAliases("${importProvider}_import_keycloak")
 
     companion object {
-        private const val KEYCLOAK_VERSION = "16.1.1"
-        private const val KEYCLOAK_PATH = "http://localhost:%d/auth"
+        private const val KEYCLOAK_VERSION = "24.0.3"
+        private const val KEYCLOAK_PATH = "http://localhost:%d/"
 
         private const val KEYCLOAK_ADMIN_USER = "admin"
         private const val KEYCLOAK_ADMIN_PASSWORD = "admin"
@@ -200,7 +184,6 @@ class CustomImportIntegrationTest {
         private const val POSTGRES_PASSWORD = "postgres"
         private const val POSTGRES_DATABASE = "keycloak"
 
-        private const val REALM_NAME = "test_realm"
         private const val CLIENT_NAME = "test_client"
         private const val USER_EMAIL = "test_user@example.com"
         private const val REALM_ROLE_NAME = "TEST_REALM_ROLE"

@@ -1,5 +1,7 @@
 package me.stroiker.keycloak.import
 
+import jakarta.persistence.EntityManager
+import jakarta.persistence.LockModeType
 import org.jboss.logging.Logger
 import org.keycloak.Config
 import org.keycloak.connections.jpa.JpaConnectionProvider
@@ -16,13 +18,15 @@ import org.keycloak.util.JsonSerialization
 import org.keycloak.utils.StreamsUtil
 import java.io.File
 import java.io.FileInputStream
-import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.stream.Collectors
-import javax.persistence.EntityManager
-import javax.persistence.LockModeType
 
-class CustomImportProviderImpl(dir: String) : ImportProvider {
+class CustomImportProviderImpl(
+    private val factory: KeycloakSessionFactory,
+    private val strategy: Strategy,
+    private val realmName: String?,
+    dir: String
+) : ImportProvider {
 
     private val rootDirectory: File
 
@@ -38,13 +42,17 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
 
     override fun close() {}
 
-    override fun importModel(factory: KeycloakSessionFactory, strategy: Strategy) {
-        getRealmsToImport().forEach { realmName ->
+    override fun importModel() {
+        if (realmName != null) {
             importRealm(factory, realmName, strategy)
+        } else {
+            getRealmsToImport().forEach { realmName ->
+                importRealm(factory, realmName, strategy)
+            }
         }
     }
 
-    override fun importRealm(factory: KeycloakSessionFactory, realmName: String, strategy: Strategy) {
+    private fun importRealm(factory: KeycloakSessionFactory, realmName: String, strategy: Strategy) {
         File(rootDirectory.toString() + File.separator + realmName + "-realm.json").also { realmFile ->
             JsonSerialization.readValue(FileInputStream(realmFile), RealmRepresentation::class.java).also { realmRep ->
                 LOGGER.info("Starting to import realm '$realmName'")
@@ -58,6 +66,7 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
                 if (realmImported.get()) {
                     // Import authorization and initialize service accounts last, as they require users already in DB
                     KeycloakModelUtils.runJobInTransaction(factory) { session ->
+                        session.setAttribute("ALLOW_CREATE_POLICY", true) // enforce upload JS policies
                         kotlin.runCatching {
                             val realmManager = RealmManager(session)
                             realmManager.setupClientServiceAccountsAndAuthorizationOnImport(realmRep, false)
@@ -72,7 +81,7 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
     }
 
     private fun getRealmsToImport(): List<String> =
-        rootDirectory.listFiles { dir, name -> name.endsWith("-realm.json") }?.let { realmFiles ->
+        rootDirectory.listFiles { _, name -> name.endsWith("-realm.json") }?.let { realmFiles ->
             val realmNames: MutableList<String> = ArrayList()
             for (file in realmFiles) {
                 val fileName = file.name
@@ -103,8 +112,26 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
             val rolesBeforeUpdate = getRoles(realm.id, entityManager)
             val groupsBeforeUpdate = getGroups(realm.id, entityManager)
 
-            LOGGER.info("Removing realm '$realmName' without removing users...")
+            LOGGER.info("Removing realm '$realmName'...")
             removeRealm(realm.id, entityManager, session)
+            LOGGER.info("Removing realm '$realmName' default users...")
+            rep.users.forEach { userRep ->
+                entityManager.createNamedQuery("getRealmUserByUsername", UserEntity::class.java)
+                    .setParameter("realmId", realm.id)
+                    .setParameter("username", userRep.username)
+                    .resultList
+                    .firstOrNull()
+                    ?.also { user ->
+                        entityManager.createNamedQuery("deleteUserRoleMappingsByUser")
+                            .setParameter("user", user)
+                            .executeUpdate()
+                        entityManager.createNamedQuery("deleteUserGroupMembershipsByUser")
+                            .setParameter("user", user)
+                            .executeUpdate()
+                        entityManager.remove(user)
+                        entityManager.flush()
+                    }
+            }
             LOGGER.info("Importing realm '$realmName'...")
             realmManager.importRealm(rep, true)
 
@@ -164,8 +191,8 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
                     })?.also { newRole ->
                         LOGGER.debug("Changed role id '${oldRole.id}' -> '${newRole.id}'")
                         entityManager.createNativeQuery(UPDATE_USER_ROLE_MAPPING_QUERY)
-                            .setParameter("newRoleId", newRole.id)
-                            .setParameter("oldRoleId", oldRole.id)
+                            .setParameter(1, newRole.id)
+                            .setParameter(2, oldRole.id)
                             .executeUpdate()
                     }
                 }
@@ -184,8 +211,8 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
                     newGroups.find { newGroup -> oldGroup.id != newGroup.id }?.also { newGroup ->
                         LOGGER.debug("Changed group id '${oldGroup.id}' -> '${newGroup.id}'")
                         entityManager.createNativeQuery(UPDATE_USER_GROUP_MEMBERSHIP_QUERY)
-                            .setParameter("newGroupId", newGroup.id)
-                            .setParameter("oldGroupId", oldGroup.id)
+                            .setParameter(1, newGroup.id)
+                            .setParameter(2, oldGroup.id)
                             .executeUpdate()
                     }
                 }
@@ -284,9 +311,10 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
                 .forEach { role -> removeRole(entityManager, role) }
             // remove groups
             StreamsUtil.closing(PaginationUtils.paginateQuery(
-                entityManager.createNamedQuery("getTopLevelGroupIds", String::class.java)
+                entityManager.createNamedQuery("getGroupIdsByParentAndNameContaining", String::class.java)
                     .setParameter("realm", realm.id)
-                    .setParameter("parent", GroupEntity.TOP_PARENT_ID), null, null
+                    .setParameter("parent", GroupEntity.TOP_PARENT_ID)
+                    .setParameter("search", ""), null, null
             )
                 .resultStream
                 .map { id ->
@@ -301,6 +329,7 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
                 realmAdapter.removeDefaultGroup(group)
                 StreamsUtil.closing(PaginationUtils.paginateQuery(
                     entityManager.createNamedQuery("getGroupIdsByParent", String::class.java)
+                        .setParameter("realm", realm.id)
                         .setParameter("parent", group.id), null, null
                 )
                     .resultStream
@@ -348,8 +377,8 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
 
     private fun removeRole(entityManager: EntityManager, role: RoleEntity) {
         val compositeRoleTable = JpaUtils.getTableNameForNativeQuery("COMPOSITE_ROLE", entityManager)
-        entityManager.createNativeQuery("delete from $compositeRoleTable where CHILD_ROLE = :role")
-            .setParameter("role", role)
+        entityManager.createNativeQuery("delete from $compositeRoleTable where CHILD_ROLE = ?1")
+            .setParameter(1, role.id)
             .executeUpdate()
         entityManager.createNamedQuery("deleteClientScopeRoleMappingByRole").setParameter("role", role)
             .executeUpdate()
@@ -362,9 +391,9 @@ class CustomImportProviderImpl(dir: String) : ImportProvider {
         private const val SELECT_ROLES = "select role from RoleEntity role where role.realmId = :realmId"
         private const val SELECT_GROUPS = "select group from GroupEntity group where group.realm = :realmId"
         private const val UPDATE_USER_ROLE_MAPPING_QUERY =
-            "update user_role_mapping set role_id = :newRoleId where role_id = :oldRoleId"
+            "update user_role_mapping set role_id = ?1 where role_id = ?2"
         private const val UPDATE_USER_GROUP_MEMBERSHIP_QUERY =
-            "update user_group_membership set group_id = :newGroupId where group_id = :oldGroupId"
+            "update user_group_membership set group_id = ?1 where group_id = ?2"
         private const val DELETE_USER_ROLE_MAPPING_ORPHANS_QUERY =
             "delete from user_role_mapping where role_id not in (select id from keycloak_role)"
         private const val DELETE_USER_GROUP_MEMBERSHIP_ORPHANS_QUERY =

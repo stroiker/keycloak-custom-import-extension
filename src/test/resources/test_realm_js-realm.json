@@ -1,6 +1,6 @@
 {
-  "id": "test_realm",
-  "realm": "test_realm",
+  "id": "test_realm_js",
+  "realm": "test_realm_js",
   "notBefore": 0,
   "defaultSignatureAlgorithm": "RS256",
   "revokeRefreshToken": false,
@@ -52,14 +52,15 @@
         "description": "${role_uma_authorization}",
         "composite": false,
         "clientRole": false,
-        "containerId": "test_realm",
+        "containerId": "test_realm_js",
         "attributes": {}
       },
       {
+        "id": "d1e9011d-900e-425b-b2ee-c91340f92777",
         "name": "TEST_REALM_ROLE",
         "composite": false,
         "clientRole": false,
-        "containerId": "test_realm",
+        "containerId": "test_realm_js",
         "attributes": {}
       },
       {
@@ -68,12 +69,12 @@
         "description": "${role_offline-access}",
         "composite": false,
         "clientRole": false,
-        "containerId": "test_realm",
+        "containerId": "test_realm_js",
         "attributes": {}
       },
       {
         "id": "b71bbe3d-a4c6-4728-a30d-6740a019df03",
-        "name": "default-roles-test_realm",
+        "name": "default-roles-test_realm_js",
         "description": "${role_default-roles}",
         "composite": true,
         "composites": {
@@ -89,7 +90,7 @@
           }
         },
         "clientRole": false,
-        "containerId": "test_realm",
+        "containerId": "test_realm_js",
         "attributes": {}
       }
     ],
@@ -441,11 +442,11 @@
   ],
   "defaultRole": {
     "id": "b71bbe3d-a4c6-4728-a30d-6740a019df03",
-    "name": "default-roles-test_realm",
+    "name": "default-roles-test_realm_js",
     "description": "${role_default-roles}",
     "composite": true,
     "clientRole": false,
-    "containerId": "test_realm"
+    "containerId": "test_realm_js"
   },
   "requiredCredentials": [
     "password"
@@ -501,7 +502,7 @@
       "disableableCredentialTypes": [],
       "requiredActions": [],
       "realmRoles": [
-        "default-roles-test_realm"
+        "default-roles-test_realm_js"
       ],
       "clientRoles": {
         "test_client": [
@@ -919,6 +920,31 @@
             "uris": [
               "/*"
             ]
+          }
+        ],
+        "policies": [
+          {
+            "id": "652fe90b-b41e-4139-824d-f235169ad18f",
+            "name": "Default Policy",
+            "description": "A policy that grants access only for users within this realm",
+            "type": "js",
+            "logic": "POSITIVE",
+            "decisionStrategy": "AFFIRMATIVE",
+            "config": {
+              "code": "// by default, grants any permission associated with this policy\n$evaluation.grant();\n"
+            }
+          },
+          {
+            "id": "78e4b4ef-280f-46ca-9f78-7a80a5ab044f",
+            "name": "Default Permission",
+            "description": "A permission that applies to the default resource type",
+            "type": "resource",
+            "logic": "POSITIVE",
+            "decisionStrategy": "UNANIMOUS",
+            "config": {
+              "defaultResourceType": "urn:test_client:resources:default",
+              "applyPolicies": "[\"Default Policy\"]"
+            }
           }
         ],
         "scopes": [],
