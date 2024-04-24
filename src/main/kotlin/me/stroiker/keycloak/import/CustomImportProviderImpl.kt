@@ -1,5 +1,6 @@
 package me.stroiker.keycloak.import
 
+import com.fasterxml.jackson.core.JsonToken
 import jakarta.persistence.EntityManager
 import jakarta.persistence.LockModeType
 import org.jboss.logging.Logger
@@ -12,7 +13,9 @@ import org.keycloak.models.*
 import org.keycloak.models.jpa.*
 import org.keycloak.models.jpa.entities.*
 import org.keycloak.models.utils.KeycloakModelUtils
+import org.keycloak.models.utils.RepresentationToModel
 import org.keycloak.representations.idm.RealmRepresentation
+import org.keycloak.representations.idm.UserRepresentation
 import org.keycloak.services.managers.RealmManager
 import org.keycloak.util.JsonSerialization
 import org.keycloak.utils.StreamsUtil
@@ -75,14 +78,74 @@ class CustomImportProviderImpl(
                         }
                     }
                 }
-                LOGGER.info("Realm '$realmName' imported successful")
+                LOGGER.info("Realm '$realmName' imported successfully")
+
+                // Import users which not exist
+                rootDirectory.listFiles { _: File, name: String ->
+                    name.matches("$realmName-users-[0-9]+\\.json".toRegex())
+                }?.forEach { userFile ->
+                    LOGGER.info("Starting to import users for realm '$realmName'")
+                    parseRealmUsers(userFile, realmName).also { userReps ->
+                        KeycloakModelUtils.runJobInTransaction(factory) { session ->
+                            kotlin.runCatching {
+                                val entityManager =
+                                    session.getProvider(JpaConnectionProvider::class.java).entityManager
+                                session.realms()
+                                val realm = session.realms().getRealmByName(realmName)
+                                userReps.filter { userRep ->
+                                    entityManager.createNamedQuery("getRealmUserByUsername")
+                                        .setParameter("realmId", realm.id)
+                                        .setParameter("username", userRep.username)
+                                        .resultList
+                                        .isNullOrEmpty()
+                                }.forEach { userRep ->
+                                    RepresentationToModel.createUser(session, realm, userRep)
+                                }
+                            }.onFailure {
+                                throw RuntimeException(
+                                    "Error during import users for realm '$realmName': ${it.message}",
+                                    it
+                                )
+                            }
+                        }
+                    }
+                    LOGGER.info("Realm '$realmName' users imported successfully")
+                }
             }
         }
     }
 
+    private fun parseRealmUsers(file: File, realmName: String): List<UserRepresentation> {
+        val userReps = mutableListOf<UserRepresentation>()
+        FileInputStream(file).use { fis ->
+            JsonSerialization.mapper.factory.createParser(fis).use { parser ->
+                parser.nextToken()
+                while (parser.nextToken() == JsonToken.FIELD_NAME) {
+                    if ("realm" == parser.text) {
+                        parser.nextToken()
+                        check(parser.text == realmName) { "Trying to import users into invalid realm. Realm name: $realmName, Expected realm name: ${parser.text}" }
+                    } else if ("users" == parser.text) {
+                        parser.nextToken()
+                        if (parser.currentToken == JsonToken.START_ARRAY) {
+                            parser.nextToken()
+                        }
+                        while (parser.currentToken == JsonToken.START_OBJECT) {
+                            userReps.add(parser.readValueAs(UserRepresentation::class.java))
+                            parser.nextToken()
+                        }
+                        if (parser.currentToken == JsonToken.END_ARRAY) {
+                            parser.nextToken()
+                        }
+                    }
+                }
+            }
+        }
+        return userReps
+    }
+
     private fun getRealmsToImport(): List<String> =
         rootDirectory.listFiles { _, name -> name.endsWith("-realm.json") }?.let { realmFiles ->
-            val realmNames: MutableList<String> = ArrayList()
+            val realmNames = mutableListOf<String>()
             for (file in realmFiles) {
                 val fileName = file.name
                 // Parse "foo" from "foo-realm.json"
@@ -114,32 +177,34 @@ class CustomImportProviderImpl(
 
             LOGGER.info("Removing realm '$realmName'...")
             removeRealm(realm.id, entityManager, session)
-            LOGGER.info("Removing realm '$realmName' default users...")
-            rep.users.forEach { userRep ->
-                entityManager.createNamedQuery("getRealmUserByUsername", UserEntity::class.java)
-                    .setParameter("realmId", realm.id)
-                    .setParameter("username", userRep.username)
-                    .resultList
-                    .firstOrNull()
-                    ?.also { user ->
-                        entityManager.createNamedQuery("deleteUserRoleMappingsByUser")
-                            .setParameter("user", user)
-                            .executeUpdate()
-                        entityManager.createNamedQuery("deleteUserGroupMembershipsByUser")
-                            .setParameter("user", user)
-                            .executeUpdate()
-                        entityManager.remove(user)
-                        entityManager.flush()
-                    }
+            rep.users.takeUnless { it.isNullOrEmpty() }?.also { defaultUsers ->
+                LOGGER.info("Removing realm '$realmName' default users...")
+                defaultUsers.forEach { userRep ->
+                    entityManager.createNamedQuery("getRealmUserByUsername", UserEntity::class.java)
+                        .setParameter("realmId", realm.id)
+                        .setParameter("username", userRep.username)
+                        .resultList
+                        .firstOrNull()
+                        ?.also { user ->
+                            entityManager.createNamedQuery("deleteUserRoleMappingsByUser")
+                                .setParameter("user", user)
+                                .executeUpdate()
+                            entityManager.createNamedQuery("deleteUserGroupMembershipsByUser")
+                                .setParameter("user", user)
+                                .executeUpdate()
+                            entityManager.remove(user)
+                            entityManager.flush()
+                        }
+                }
             }
             LOGGER.info("Importing realm '$realmName'...")
             realmManager.importRealm(rep, true)
 
-            getRoles(realm.id, entityManager).also { rolesAfterUpdate ->
+            getRoles(realm.id, entityManager).takeUnless { it.isEmpty() }?.also { rolesAfterUpdate ->
                 LOGGER.info("Updating changed users role mapping ids for realm '$realmName'...")
                 updateRoleMappings(rolesBeforeUpdate, rolesAfterUpdate, entityManager)
             }
-            getGroups(realm.id, entityManager).also { groupsAfterUpdate ->
+            getGroups(realm.id, entityManager).takeUnless { it.isEmpty() }?.also { groupsAfterUpdate ->
                 LOGGER.info("Updating changed users group membership ids for realm '$realmName'...")
                 updateGroupMemberships(groupsBeforeUpdate, groupsAfterUpdate, entityManager)
             }

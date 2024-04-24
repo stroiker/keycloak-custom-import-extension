@@ -1,0 +1,38 @@
+{
+  "realm" : "test_realm",
+  "users" : [ {
+    "id" : "bc82ce1a-a748-4cd3-9f0b-2daa635e99fa",
+    "createdTimestamp" : 1607675141258,
+    "username" : "test",
+    "enabled" : true,
+    "totp" : false,
+    "emailVerified" : false,
+    "email" : "test@example.com",
+    "credentials" : [ {
+      "id" : "51bcbf7e-3d86-4ef8-a413-ca6cd4f2c289",
+      "type" : "password",
+      "createdDate" : 1607675237199,
+      "secretData" : "{\"value\":\"RacTFZwxTG7ma9XJtj1RvpWmhM0q6mNLF13OWrTxm4LsfBp+8B2vHC4hPLWNnVBzWhXq6mAP5Jd03R/2r2hxKg==\",\"salt\":\"RrJvv+FV5AaetSV6vj8wzw==\"}",
+      "credentialData" : "{\"hashIterations\":27500,\"algorithm\":\"pbkdf2-sha256\"}"
+    } ],
+    "disableableCredentialTypes" : [ ],
+    "requiredActions" : [ ],
+    "realmRoles" : [ "uma_authorization", "offline_access" ],
+    "notBefore" : 0,
+    "groups" : [ ]
+  }, {
+    "id" : "77012f1e-90af-4ee9-9d53-1ff9751dee55",
+    "createdTimestamp" : 1607674981029,
+    "username" : "new_user",
+    "enabled" : true,
+    "totp" : false,
+    "emailVerified" : false,
+    "email" : "new@example.com",
+    "credentials" : [ ],
+    "disableableCredentialTypes" : [ ],
+    "requiredActions" : [ ],
+    "realmRoles" : [ "uma_authorization", "offline_access" ],
+    "notBefore" : 0,
+    "groups" : [ ]
+  } ]
+}

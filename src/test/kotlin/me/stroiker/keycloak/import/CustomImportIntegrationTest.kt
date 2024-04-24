@@ -37,10 +37,12 @@ class CustomImportIntegrationTest {
         val realmName = "test_realm"
         val realmRoleId: String
         val userId: String
-        var keycloakCnt = createKeycloakCnt(DIR_IMPORT_PROVIDER, realmName).apply { start() }
+        var keycloakCnt = createKeycloakCnt(DIR_IMPORT_PROVIDER, "src/test/resources/withusers/").apply { start() }
         var adminClient = creteAdminClient(String.format(KEYCLOAK_PATH, keycloakCnt.firstMappedPort))
         adminClient.realm(realmName).also { realm ->
             realm.clients().findByClientId(CLIENT_NAME).first().id.also { clientId ->
+                // remove already imported user
+                realm.users().delete(realm.users().search("new_user").first().id)
                 // create user
                 userId = UserRepresentation().apply {
                     email = USER_EMAIL
@@ -74,7 +76,9 @@ class CustomImportIntegrationTest {
 
                 // check user assignee before import
                 realm.users().also { users ->
-                    assertEquals(1, users.count())
+                    assertEquals(2, users.count())
+                    assertNotNull(users.search("test").firstOrNull())
+                    assertNull(users.search("new_user").firstOrNull())
                     users.get(userId).also { user ->
                         assertEquals(userId, user.toRepresentation().id)
                         user.roles().also { roles ->
@@ -98,7 +102,7 @@ class CustomImportIntegrationTest {
         }
 
         keycloakCnt.stop()
-        keycloakCnt = createKeycloakCnt(CUSTOM_IMPORT_PROVIDER, realmName).apply { start() }
+        keycloakCnt = createKeycloakCnt(CUSTOM_IMPORT_PROVIDER, "src/test/resources/withusers/").apply { start() }
 
         adminClient = creteAdminClient(String.format(KEYCLOAK_PATH, keycloakCnt.firstMappedPort))
         adminClient.realm(realmName).also { realm ->
@@ -109,7 +113,9 @@ class CustomImportIntegrationTest {
                 }
                 // check user assignee after import
                 realm.users().also { users ->
-                    assertEquals(1, users.count())
+                    assertEquals(3, users.count())
+                    assertNotNull(users.search("test").firstOrNull())
+                    assertNotNull(users.search("new_user").firstOrNull())
                     users.get(userId).also { user ->
                         assertEquals(userId, user.toRepresentation().id)
                         user.roles().also { roles ->
@@ -137,7 +143,7 @@ class CustomImportIntegrationTest {
     @Test
     fun `should import configuration with JS policies`() {
         val realmName = "test_realm_js"
-        val keycloakCnt = createKeycloakCnt(CUSTOM_IMPORT_PROVIDER, realmName).apply { start() }
+        val keycloakCnt = createKeycloakCnt(CUSTOM_IMPORT_PROVIDER, "src/test/resources/js/").apply { start() }
         val adminClient = creteAdminClient(String.format(KEYCLOAK_PATH, keycloakCnt.firstMappedPort))
         adminClient.realm(realmName).also { realm ->
             assertNotNull(realm.clients().findByClientId(CLIENT_NAME).first().id.let { id -> realm.clients().get(id) }
@@ -150,7 +156,7 @@ class CustomImportIntegrationTest {
         KeycloakBuilder.builder().serverUrl(path).grantType(OAuth2Constants.PASSWORD).realm("master")
             .clientId("admin-cli").username(KEYCLOAK_ADMIN_USER).password(KEYCLOAK_ADMIN_PASSWORD).build()
 
-    private fun createKeycloakCnt(importProvider: String, realmName: String): GenericContainer<*> =
+    private fun createKeycloakCnt(importProvider: String, configsPath: String): GenericContainer<*> =
         GenericContainer<GenericContainer<*>>(ImageFromDockerfile().withDockerfileFromBuilder { builder: DockerfileBuilder ->
             builder.from("bitnami/keycloak:$KEYCLOAK_VERSION").env("KEYCLOAK_DATABASE_USER", POSTGRES_USER)
                 .env("KEYCLOAK_DATABASE_PASSWORD", POSTGRES_PASSWORD)
@@ -158,19 +164,19 @@ class CustomImportIntegrationTest {
                 .env("KEYCLOAK_DATABASE_NAME", POSTGRES_DATABASE).env("KEYCLOAK_ADMIN", KEYCLOAK_ADMIN_USER)
                 .env("KEYCLOAK_ADMIN_PASSWORD", KEYCLOAK_ADMIN_PASSWORD).env(
                     "KEYCLOAK_EXTRA_ARGS",
-                    "-Dkeycloak.migration.realmName=$realmName -Dkeycloak.migration.provider=$importProvider -Dkeycloak.migration.strategy=OVERWRITE_EXISTING -Dkeycloak.migration.action=import -Dkeycloak.migration.dir=/config"
+                    "-Dkeycloak.migration.provider=$importProvider -Dkeycloak.migration.strategy=OVERWRITE_EXISTING -Dkeycloak.migration.action=import -Dkeycloak.migration.dir=/config"
                 ).user("root").expose(8080).build()
         }).withCreateContainerCmdModifier { modifier ->
             modifier.hostConfig?.withSecurityOpts(listOf("seccomp:unconfined"))
-        }.withCopyFileToContainer(MountableFile.forHostPath("src/test/resources/"), "/config/")
-            .withCopyFileToContainer(
-                MountableFile.forHostPath("build/libs/"), "/opt/bitnami/keycloak/providers/"
-            ).withExposedPorts(8080).withNetwork(network).dependsOn(postgresCnt)
+        }
+            .withCopyFileToContainer(MountableFile.forHostPath(configsPath), "/config/")
+            .withCopyFileToContainer(MountableFile.forHostPath("build/libs/"), "/opt/bitnami/keycloak/providers/")
+            .withExposedPorts(8080).withNetwork(network).dependsOn(postgresCnt)
             .withNetworkAliases("${importProvider}_import_keycloak").waitingFor(
                 Wait.forHttp("/")
                     .forStatusCode(200)
                     .forStatusCode(302)
-                    .withStartupTimeout(Duration.ofSeconds(180))
+                    .withStartupTimeout(Duration.ofSeconds(360))
             )
 
     companion object {
