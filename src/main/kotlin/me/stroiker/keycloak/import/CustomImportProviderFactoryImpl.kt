@@ -21,10 +21,12 @@ class CustomImportProviderFactoryImpl : ImportProviderFactory {
         )
         val realmName = System.getProperty(ExportImportConfig.REALM_NAME, config[REALM_NAME])
         val dir = System.getProperty(ExportImportConfig.DIR, config[DIR])
+        val withUsers = System.getProperty(ExportImportConfig.PREFIX + WITH_USERS, config[WITH_USERS]).toBoolean()
         return CustomImportProviderImpl(
             session.keycloakSessionFactory,
             strategy,
             realmName,
+            withUsers,
             requireNotNull(dir) { "dir is required" })
 
     }
@@ -44,5 +46,6 @@ class CustomImportProviderFactoryImpl : ImportProviderFactory {
         private const val REALM_NAME = "realmName"
         private const val DIR = "dir"
         private const val STRATEGY = "strategy"
+        private const val WITH_USERS = "withUsers"
     }
 }

@@ -18,13 +18,15 @@ This project offers custom import approach without removing users from the datab
 - Import realms configuration without removing users from a database which provides fast update;
 - Support changing internal user relations IDs. It means that all changed internal IDs of user-related entities in realm configuration file will be updated for all users and relations will be saved;
 - Support old-style JS policies upload from realm configuration files;
+- Support absent users import from separated files;
 
 # How to use
 
 1) Pull this project
 2) Set your database connection properties with in `environment` block inside file `./compose/docker-compose.yml`
 3) Put your realm configuration file into `./compose/realms` directory. Realm configuration file must named like `<realm>-realm.json`. You can specify realm name for import in `-Dkeycloak.migration.realmName` parameter.
-4) Run gradle task `composeUp`
+4) If needed put realm users file into `./compose/realms` directory. Realm users file must named like `<realm>-users-0.json`. You can enable users import by `-Dkeycloak.migration.withUsers=true` parameter set (it `false` by default).
+5) Run gradle task `composeUp`
 
 # Performance comparison
 

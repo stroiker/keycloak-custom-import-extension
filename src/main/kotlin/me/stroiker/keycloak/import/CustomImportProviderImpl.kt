@@ -28,6 +28,7 @@ class CustomImportProviderImpl(
     private val factory: KeycloakSessionFactory,
     private val strategy: Strategy,
     private val realmName: String?,
+    private val withUsers: Boolean,
     dir: String
 ) : ImportProvider {
 
@@ -80,36 +81,8 @@ class CustomImportProviderImpl(
                 }
                 LOGGER.info("Realm '$realmName' imported successfully")
 
-                // Import users which not exist
-                rootDirectory.listFiles { _: File, name: String ->
-                    name.matches("$realmName-users-[0-9]+\\.json".toRegex())
-                }?.forEach { userFile ->
-                    LOGGER.info("Starting to import users for realm '$realmName'")
-                    parseRealmUsers(userFile, realmName).also { userReps ->
-                        KeycloakModelUtils.runJobInTransaction(factory) { session ->
-                            kotlin.runCatching {
-                                val entityManager =
-                                    session.getProvider(JpaConnectionProvider::class.java).entityManager
-                                session.realms()
-                                val realm = session.realms().getRealmByName(realmName)
-                                userReps.filter { userRep ->
-                                    entityManager.createNamedQuery("getRealmUserByUsername")
-                                        .setParameter("realmId", realm.id)
-                                        .setParameter("username", userRep.username)
-                                        .resultList
-                                        .isNullOrEmpty()
-                                }.forEach { userRep ->
-                                    RepresentationToModel.createUser(session, realm, userRep)
-                                }
-                            }.onFailure {
-                                throw RuntimeException(
-                                    "Error during import users for realm '$realmName': ${it.message}",
-                                    it
-                                )
-                            }
-                        }
-                    }
-                    LOGGER.info("Realm '$realmName' users imported successfully")
+                if(withUsers) {
+                    importUsersInternal(realmName)
                 }
             }
         }
@@ -141,6 +114,40 @@ class CustomImportProviderImpl(
             }
         }
         return userReps
+    }
+
+    private fun importUsersInternal(realmName: String) {
+        // Import users which not exist
+        rootDirectory.listFiles { _: File, name: String ->
+            name.matches("$realmName-users-[0-9]+\\.json".toRegex())
+        }?.forEach { userFile ->
+            LOGGER.info("Starting to import users for realm '$realmName'")
+            parseRealmUsers(userFile, realmName).also { userReps ->
+                KeycloakModelUtils.runJobInTransaction(factory) { session ->
+                    kotlin.runCatching {
+                        val entityManager =
+                            session.getProvider(JpaConnectionProvider::class.java).entityManager
+                        session.realms()
+                        val realm = session.realms().getRealmByName(realmName)
+                        userReps.filter { userRep ->
+                            entityManager.createNamedQuery("getRealmUserByUsername")
+                                .setParameter("realmId", realm.id)
+                                .setParameter("username", userRep.username)
+                                .resultList
+                                .isNullOrEmpty()
+                        }.forEach { userRep ->
+                            RepresentationToModel.createUser(session, realm, userRep)
+                        }
+                    }.onFailure {
+                        throw RuntimeException(
+                            "Error during import users for realm '$realmName': ${it.message}",
+                            it
+                        )
+                    }
+                }
+            }
+            LOGGER.info("Realm '$realmName' users imported successfully")
+        }
     }
 
     private fun getRealmsToImport(): List<String> =
